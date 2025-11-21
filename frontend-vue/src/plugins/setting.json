@@ -1,0 +1,57 @@
+{
+	"collect_interval": 60000,
+	"dashboard": {
+		"enable_alarm_popup": 1,
+		"enable_alarm_sound": 1,
+		"show_map_name": 0,
+		"show_map_summary": 0,
+		"show_top10": 1
+	},
+	"problem": {
+		"311": {
+			"enable": 1,
+			"method": 7
+		},
+		"312": {
+			"enable": 1,
+			"method": 7
+		},
+		"313": {
+			"enable": 1,
+			"method": 7
+		},
+		"314": {
+			"enable": 1,
+			"max_weight": 50000,
+			"method": 7,
+			"min_weight": 10
+		},
+		"315": {
+			"enable": 1,
+			"method": 7,
+			"threshold": 90
+		},
+		"316": {
+			"enable": 1,
+			"method": 7,
+			"threshold": 12
+		},
+		"317": {
+			"enable": 1,
+			"method": 7,
+			"threshold": 20
+		},
+		"recv_email": [
+			"master@thingscare.com",
+			"jhpark@thingscare.com"
+		],
+		"recv_sms": [
+			"01079428591",
+			"01012348766"
+		]
+	},
+	"update": {
+		"current_ver": "1.1.2",
+		"enable": 1
+	}
+}
