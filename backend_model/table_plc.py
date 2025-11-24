@@ -75,6 +75,7 @@ class PlcDataItem(db.Model):
     min_value = db.Column('min_value', db.Numeric(10, 2), comment='최소값')
     max_value = db.Column('max_value', db.Numeric(10, 2), comment='최대값')
     is_active = db.Column('is_active', db.Boolean, default=True, comment='활성화 상태')
+    action_item = db.Column('action_item', db.Boolean, default=False, comment='액션 항목 (Item3 클릭 효과용)')
     line_number = db.Column('line_number', db.Integer, comment='PRG 파일의 라인 번호')
     source_line = db.Column('source_line', db.Text, comment='원본 PRG 라인')
     created_at = db.Column('created_at', db.TIMESTAMP, default=datetime.utcnow, nullable=False)
@@ -104,6 +105,7 @@ class PlcDataItem(db.Model):
             "min_value": float(self.min_value) if self.min_value else None,
             "max_value": float(self.max_value) if self.max_value else None,
             "is_active": self.is_active,
+            "action_item": self.action_item,
             "line_number": self.line_number,
             "source_line": self.source_line,
             "created_at": self.created_at.isoformat() if self.created_at else None,

@@ -85,6 +85,20 @@
                                     </div>
                                 </template>
 
+                                <!-- 액션 항목 체크박스 컬럼 (action_item) -->
+                                <template #cell(action_item)="row">
+                                    <div class="form-check form-check-primary d-flex justify-content-center align-items-center">
+                                        <input 
+                                            type="checkbox" 
+                                            class="form-check-input action-item-checkbox" 
+                                            :checked="row.item.action_item"
+                                            @change="toggleActionItem(row.item)"
+                                            :disabled="isUpdatingAction === row.item.id"
+                                        />
+                                        <span v-if="isUpdatingAction === row.item.id" class="spinner-border spinner-border-sm text-primary ml-2"></span>
+                                    </div>
+                                </template>
+
                                 <!-- 항목 타입 컬럼 -->
                                 <template #cell(item_type)="row">
                                     <span class="badge badge-type" :class="getTypeBadgeClass(row.item.item_type)">
@@ -186,6 +200,7 @@ export default {
             filtered_items: [],
             columns: [
                 { key: 'is_active', label: '조회 대상', sortable: true, thClass: 'text-center', tdClass: 'text-center' },
+                { key: 'action_item', label: '액션 항목', sortable: true, thClass: 'text-center', tdClass: 'text-center' },
                 { key: 'id', label: 'ID', sortable: true, thClass: 'text-center', tdClass: 'text-center' },
                 { key: 'item_name', label: '항목 이름', sortable: true },
                 { key: 'item_type', label: '타입', sortable: true, thClass: 'text-center', tdClass: 'text-center' },
@@ -205,7 +220,8 @@ export default {
             },
             meta: {},
             isLoading: false,
-            isUpdating: null // 현재 업데이트 중인 항목 ID
+            isUpdating: null, // 현재 업데이트 중인 항목 ID
+            isUpdatingAction: null // 현재 액션 항목 업데이트 중인 항목 ID
         }
     },
     watch: {
@@ -291,6 +307,55 @@ export default {
                 this.fetchMemoryItems();
             } finally {
                 this.isUpdating = null;
+            }
+        },
+
+        async toggleActionItem(item) {
+            try {
+                this.isUpdatingAction = item.id;
+                const response = await this.$http.patch(`/plc/memory-items/${item.id}/toggle-action-item`);
+                
+                if (response.data.success) {
+                    // 로컬 데이터 업데이트
+                    // 다른 모든 항목의 action_item을 false로 설정
+                    this.items.forEach(i => {
+                        i.action_item = false;
+                    });
+                    // 현재 항목의 action_item 업데이트
+                    const index = this.items.findIndex(i => i.id === item.id);
+                    if (index !== -1) {
+                        this.items[index].action_item = response.data.data.action_item;
+                    }
+                    this.filtered_items = [...this.items];
+                    
+                    this.$bvToast.toast(
+                        `액션 항목이 ${response.data.data.action_item ? '설정' : '해제'}되었습니다.`,
+                        {
+                            title: '성공',
+                            variant: 'success',
+                            solid: true
+                        }
+                    );
+                } else {
+                    this.$bvToast.toast('액션 항목 상태 업데이트에 실패했습니다.', {
+                        title: '오류',
+                        variant: 'danger',
+                        solid: true
+                    });
+                    // 원래 상태로 복구
+                    this.fetchMemoryItems();
+                }
+            } catch (error) {
+                console.error('액션 항목 상태 업데이트 오류:', error);
+                this.$bvToast.toast('액션 항목 상태 업데이트 중 오류가 발생했습니다.', {
+                    title: '오류',
+                    variant: 'danger',
+                    solid: true
+                });
+                // 원래 상태로 복구
+                this.fetchMemoryItems();
+            } finally {
+                this.isUpdatingAction = null;
             }
         },
 

@@ -311,6 +311,7 @@ def get_plc_data_items():
                 "min_value": float(item.min_value) if item.min_value else None,
                 "max_value": float(item.max_value) if item.max_value else None,
                 "is_active": item.is_active,
+                "action_item": item.action_item,
                 "line_number": item.line_number,
                 "source_line": item.source_line,
                 "created_at": item.created_at.isoformat() if item.created_at else None,
@@ -363,6 +364,7 @@ def get_plc_memory_items():
                 "min_value": float(item.min_value) if item.min_value else None,
                 "max_value": float(item.max_value) if item.max_value else None,
                 "is_active": item.is_active,
+                "action_item": item.action_item,
                 "line_number": item.line_number,
                 "source_line": item.source_line,
                 "created_at": item.created_at.isoformat() if item.created_at else None,
@@ -416,4 +418,46 @@ def toggle_plc_memory_item_active(item_id):
         return make_response(jsonify({
             "success": False,
             "message": f"상태 업데이트 실패: {str(e)}"
+        }), 500)
+
+@app.route('/api/v1/plc/memory-items/<int:item_id>/toggle-action-item', methods=['PATCH'])
+def toggle_plc_memory_item_action(item_id):
+    """PLC 메모리 항목의 action_item 상태 토글 (단일 선택: 체크 시 다른 항목 모두 un체크)"""
+    try:
+        # 항목 조회
+        item = db.session.query(PlcDataItem).filter(PlcDataItem.id == item_id).first()
+        
+        if not item:
+            return make_response(jsonify({
+                "success": False,
+                "message": "항목을 찾을 수 없습니다"
+            }), 404)
+        
+        # action_item이 체크되는 경우 (현재 false -> true)
+        if not item.action_item:
+            # 다른 모든 항목의 action_item을 false로 설정
+            db.session.query(PlcDataItem).filter(PlcDataItem.id != item_id).update({PlcDataItem.action_item: False})
+            # 현재 항목을 true로 설정
+            item.action_item = True
+        else:
+            # action_item이 un체크되는 경우 (현재 true -> false)
+            item.action_item = False
+        
+        db.session.commit()
+        
+        return make_response(jsonify({
+            "success": True,
+            "data": {
+                "id": item.id,
+                "action_item": item.action_item
+            },
+            "message": "액션 항목 상태 업데이트 성공"
+        }), 200)
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"PLC 메모리 항목 액션 상태 업데이트 오류: {str(e)}")
+        return make_response(jsonify({
+            "success": False,
+            "message": f"액션 상태 업데이트 실패: {str(e)}"
         }), 500)

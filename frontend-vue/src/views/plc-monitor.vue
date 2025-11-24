@@ -81,7 +81,12 @@
             <div class="data-panel">
                 <h3>실시간 데이터</h3>
                 <div class="data-grid">
-                    <div class="data-item" v-for="(item, index) in filteredRealTimeData" :key="index">
+                    <div 
+                        class="data-item" 
+                        :class="{ 'blinking': isActionItemBlinking(item) }"
+                        v-for="(item, index) in filteredRealTimeData" 
+                        :key="index"
+                    >
                         <span class="data-label">{{ item.name }}</span>
                         <span class="data-value" :class="getValueClass(item.value)">
                             {{ formatValue(item.value) }}
@@ -149,6 +154,9 @@ export default {
             
             // is_active가 true인 항목들만 필터링 (동적으로 로드)
             targetItems: [],
+            
+            // action_item이 true인 항목 (Item3 클릭 효과용)
+            actionItemName: null,
             
             // 애니메이션 관련
             animationId: null,
@@ -545,14 +553,23 @@ export default {
                         .map(item => item.item_name || item.address)
                         .filter(name => name); // 빈 값 제거
                     
+                    // action_item이 true인 항목 찾기
+                    const actionItem = response.data.data.find(item => item.action_item === true);
+                    this.actionItemName = actionItem ? (actionItem.item_name || actionItem.address) : null;
+                    
                     console.log('활성화된 항목 로드 완료:', this.targetItems.length, '개');
+                    if (this.actionItemName) {
+                        console.log('액션 항목:', this.actionItemName);
+                    }
                 } else {
                     console.warn('활성화된 항목 조회 실패:', response.data.message);
                     this.targetItems = [];
+                    this.actionItemName = null;
                 }
             } catch (error) {
                 console.error('활성화된 항목 조회 오류:', error);
                 this.targetItems = [];
+                this.actionItemName = null;
             }
         },
 
@@ -592,8 +609,8 @@ export default {
                         };
                     });
                     
-                    // D4010 값에 따라 Item3 애니메이션 제어
-                    this.checkD4010AndControlItem3();
+                    // action_item 값에 따라 Item3 애니메이션 제어
+                    this.checkActionItemAndControlItem3();
                 } else {
                     console.warn('DB에서 데이터를 가져올 수 없습니다:', response.data.message);
                     // 기본 데이터 설정
@@ -639,6 +656,15 @@ export default {
             return 'value-good';
         },
 
+        isActionItemBlinking(item) {
+            // action_item이 설정되어 있고, 해당 항목의 값이 1이면 깜박임
+            if (!this.actionItemName || item.name !== this.actionItemName) {
+                return false;
+            }
+            const value = Math.floor(Number(item.value || 0));
+            return value === 1;
+        },
+
         async refreshData() {
             console.log('데이터 새로고침 - 활성화된 항목 및 실시간 데이터 가져오기');
             await this.fetchActiveItems();
@@ -655,23 +681,29 @@ export default {
             this.isRotating = false;
         },
 
-        // D4010 값 확인 및 Item3 애니메이션 제어
-        checkD4010AndControlItem3() {
-            const d4010Item = this.realTimeData.find(item => item.name === 'D4010');
-            if (!d4010Item || !this.item3Model) {
+        // action_item 값 확인 및 Item3 애니메이션 제어
+        checkActionItemAndControlItem3() {
+            // action_item이 설정되지 않았거나 item3Model이 없으면 리턴
+            if (!this.actionItemName || !this.item3Model) {
+                return;
+            }
+            
+            // action_item에 해당하는 데이터 찾기
+            const actionItemData = this.realTimeData.find(item => item.name === this.actionItemName);
+            if (!actionItemData) {
                 return;
             }
             
             // 10진수로 변환하고 소수점 버리기
-            const d4010Value = Math.floor(Number(d4010Item.value || 0));
+            const actionItemValue = Math.floor(Number(actionItemData.value || 0));
             
-            if (d4010Value === 1) {
-                // D4010 값이 1일 경우: 애니메이션 시작
+            if (actionItemValue === 1) {
+                // action_item 값이 1일 경우: 애니메이션 시작
                 if (this.item3AnimationState === 'idle') {
                     this.startItem3Animation();
                 }
-            } else if (d4010Value === 0) {
-                // D4010 값이 0일 경우: 애니메이션 중지 및 리셋
+            } else if (actionItemValue === 0) {
+                // action_item 값이 0일 경우: 애니메이션 중지 및 리셋
                 if (this.item3AnimationState === 'moving') {
                     this.stopItem3Animation();
                 }
@@ -687,7 +719,7 @@ export default {
                 this.item3Model.position.z = -1.5; // Z축 더 아래
                 this.item3AnimationState = 'moving';
                 this.item3AnimationProgress = 0;
-                console.log('D4010=1: Item3 애니메이션 시작');
+                console.log(`${this.actionItemName}=1: Item3 애니메이션 시작`);
             }
         },
         
@@ -701,7 +733,7 @@ export default {
                 this.item3Model.position.y = -0.1; // 고정된 높이 (아래로 조금)
                 this.item3Model.position.z = -0.4; // Z축 위치 고정 (더 아래)
                 this.item3Model.rotation.z = 0; // 회전 리셋
-                console.log('D4010=0: Item3 애니메이션 중지 및 리셋');
+                console.log(`${this.actionItemName}=0: Item3 애니메이션 중지 및 리셋`);
             }
         },
         
@@ -946,6 +978,25 @@ export default {
 .data-item:hover {
     background: rgba(255, 255, 255, 0.1);
     transform: translateY(-2px);
+}
+
+.data-item.blinking {
+    animation: blink 0.5s ease-in-out infinite;
+    border-color: #00ffff;
+    box-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+}
+
+@keyframes blink {
+    0%, 100% {
+        opacity: 1;
+        background: rgba(0, 255, 255, 0.2);
+        box-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+    }
+    50% {
+        opacity: 0.6;
+        background: rgba(0, 255, 255, 0.4);
+        box-shadow: 0 0 20px rgba(0, 255, 255, 0.8);
+    }
 }
 
 .data-label {
