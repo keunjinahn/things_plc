@@ -2,10 +2,14 @@
     "name": "demo4",
     "version": "0.1.0",
     "private": true,
+    "engines": {
+        "node": "20.20.0",
+        "npm": ">=10.0.0"
+    },
     "scripts": {
-        "serve": "vue-cli-service serve --open",
-        "dev": "vue-cli-service serve --open",
-        "build": "vue-cli-service build",
+        "serve": "cross-env NODE_OPTIONS=--openssl-legacy-provider vue-cli-service serve --open",
+        "dev": "cross-env NODE_OPTIONS=--openssl-legacy-provider vue-cli-service serve --open",
+        "build": "cross-env NODE_OPTIONS=--openssl-legacy-provider vue-cli-service build",
         "lint": "vue-cli-service lint"
     },
     "dependencies": {
@@ -59,6 +63,7 @@
         "@vue/cli-plugin-vuex": "~4.5.0",
         "@vue/cli-service": "~4.5.0",
         "babel-eslint": "^10.1.0",
+        "cross-env": "^7.0.3",
         "eslint": "^6.7.2",
         "eslint-plugin-vue": "^6.2.2",
         "sass": "^1.35.1",

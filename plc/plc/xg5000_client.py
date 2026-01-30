@@ -623,7 +623,7 @@ def main():
         try:
             # 메인 스레드에서 대기
             while True:
-                time.sleep(1)
+                time.sleep(0.5)
         except KeyboardInterrupt:
             print("\n사용자에 의해 중단됨")
             client.stop_data_collection()

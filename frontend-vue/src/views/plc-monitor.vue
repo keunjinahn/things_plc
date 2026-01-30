@@ -67,12 +67,28 @@
                         <i class="las la-cube"></i>
                     </div>
                     <div class="status-content">
-                        <h4>Item3 모델</h4>
+                        <h4>철망 제품 상태</h4>
                         <p class="status-value active">로드됨</p>
-                        <small>3D 모델 활성</small>
-                        <button @click="onItem3Click" class="item3-click-btn" :disabled="item3AnimationState === 'moving'">
-                            {{ item3AnimationState === 'moving' ? '이동 중...' : 'Item3 이동' }}
-                        </button>
+                        <div class="button-group">
+                            <div class="button-row">
+                                <span class="button-label">제품 이동</span>
+                                <button @click="onItem3Click" class="apply-btn" :disabled="item3AnimationState === 'moving'">
+                                    {{ item3AnimationState === 'moving' ? '이동 중...' : '적용' }}
+                                </button>
+                            </div>
+                            <div class="button-row">
+                                <span class="button-label">제품 회전</span>
+                                <button @click="onProductRotate" class="apply-btn">
+                                    적용
+                                </button>
+                            </div>
+                            <div class="button-row">
+                                <span class="button-label">제품 적제</span>
+                                <button @click="onProductStack" class="apply-btn">
+                                    적용
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -114,6 +130,11 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
+
+// PLC 주소 상수 (하드코딩)
+const PLC_ADDRESS_PRODUCT_MOVE = 'D4123';    // 제품이동 주소
+const PLC_ADDRESS_PRODUCT_ROTATE = 'D4407';  // 제품회전 주소
+const PLC_ADDRESS_PRODUCT_STACK = 'D4625';   // 제품적재 주소
 
 export default {
     name: 'PLCMonitor3D',
@@ -164,8 +185,31 @@ export default {
             
             // 3D 모델 관련
             item3Model: null,
-            item3AnimationState: 'idle', // 'idle', 'moving'
-            item3AnimationProgress: 0
+            item3AnimationState: 'idle', // 'idle', 'moving', 'completed'
+            item3AnimationProgress: 0,
+            item3StartPosition: { x: -1.5, y: -0.48, z: -0.5 }, // 시작 위치 (초기 위치)
+            item3TargetPosition: { x: 0, y: -0.48, z: -0.5 }, // 목표 위치 (중간 지점, Y값은 초기 위치와 동일)
+            
+            // 회전 애니메이션 관련
+            item3RotationState: 'idle', // 'idle', 'rotating', 'completed'
+            item3RotationProgress: 0,
+            item3StartRotation: 0, // 시작 회전 각도
+            item3TargetRotation: 0, // 목표 회전 각도 (90도)
+            item3RotationCenter: { x: 0, y: 0, z: 0 }, // 회전 중심점 (철망 사각형의 중심)
+            item3StartPositionForRotation: { x: 0, y: 0, z: 0 }, // 회전 시작 시 위치
+            item3TargetPositionAfterRotation: { x: 0, y: 0, z: 0 }, // 회전 완료 후 목표 위치
+            item3GeometryOffset: { x: 0, y: 0, z: 0 }, // 모델 원점에서 geometry 중심까지의 오프셋
+            
+            // 적재 애니메이션 관련
+            item3StackState: 'idle', // 'idle', 'stacking', 'completed'
+            item3StackProgress: 0,
+            item3StackStartPosition: { x: 0, y: 0, z: 0 }, // 적재 시작 위치
+            item3StackTargetPosition: { x: 0, y: 0, z: 0 }, // 적재 목표 위치 (X축 +2)
+            
+            // 버튼 상태값 (1 또는 0) - 하드코딩된 초기값
+            productMoveState: 0,      // 제품이동 상태 (D4123)
+            productRotateState: 0,    // 제품회전 상태 (D4407)
+            productStackState: 0      // 제품적재 상태 (D4625)
         };
     },
     computed: {
@@ -374,26 +418,45 @@ export default {
 
         loadItem3Model() {
             const loader = new GLTFLoader();
-            
+
             // Item3 GLB 파일 로드
             loader.load('/plc/3D/item3.glb', (gltf) => {
-                this.item3Model = gltf.scene;
-                
-                // 모델 스케일 조정 - 30% 줄임 (2 * 0.7 = 1.4)
-                this.item3Model.scale.set(1.4, 1.4, 1.4);
-                
-                // 모델 위치 설정 (왼쪽에 배치, Z축으로 더 아래)
-                this.item3Model.position.set(-1.5, 0.5, -1.5);
-                
+                const loadedModel = gltf.scene;
+
+                // 모델 스케일 조정
+                loadedModel.scale.set(2, 2, 2);
+                loadedModel.updateMatrixWorld(true);
+
+                // 바운딩 박스로 geometry 중심 계산
+                const box = new THREE.Box3().setFromObject(loadedModel);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+
+                // 피벗 그룹 생성 (이 그룹이 회전의 중심이 됨)
+                this.item3Model = new THREE.Group();
+
+                // 로드된 모델을 그룹에 추가하고, 중심이 그룹 원점에 오도록 오프셋
+                loadedModel.position.set(-center.x, -center.y, -center.z);
+                this.item3Model.add(loadedModel);
+
+                // 모델 초기 위치 설정 (피벗 그룹의 위치 = geometry 중심 위치)
+                const initialX = -2.0;
+                const initialY = -0.48 + center.y; // 중심 높이 보정
+                const initialZ = -0.0;
+                this.item3Model.position.set(initialX, initialY, initialZ);
+
+                // 시작 위치 저장 (초기 위치)
+                this.item3StartPosition = { x: initialX, y: initialY, z: initialZ };
+
                 // 모델 회전 조정 (회전하지 않음)
                 this.item3Model.rotation.y = 0;
-                
+
                 // 그림자 설정
-                this.item3Model.traverse((child) => {
+                loadedModel.traverse((child) => {
                     if (child.isMesh) {
                         child.castShadow = true;
                         child.receiveShadow = true;
-                        
+
                         // 재질 개선
                         if (child.material) {
                             child.material.metalness = 0.7;
@@ -401,16 +464,17 @@ export default {
                         }
                     }
                 });
-                
+
                 // Item3을 device_v2blend의 자식으로 추가하여 상대적 위치 유지
                 if (this.deviceModel) {
                     this.deviceModel.add(this.item3Model);
-                    console.log('Item3 모델을 device_v2blend에 추가 완료');
+                    console.log('Item3 모델을 device_v2blend에 추가 완료 (중심 피벗)');
+                    console.log(`Geometry 크기: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`);
                 } else {
                     this.scene.add(this.item3Model);
                     console.log('Item3 모델 로드 완료 (device_v2blend 없음)');
                 }
-                
+
             }, undefined, (error) => {
                 console.error('Item3 모델 로드 실패:', error);
             });
@@ -436,52 +500,84 @@ export default {
                 });
             }
             
-            // Item3 모델 애니메이션 - 클릭 시 중앙에서 우측으로 이동
+            // Item3 모델 애니메이션 - 제품 이동 버튼 클릭 시 중간 지점까지 수평 이동
             if (this.item3Model) {
                 if (this.item3AnimationState === 'moving') {
-                    // 애니메이션 진행률 업데이트 (두 배 느리게)
-                    this.item3AnimationProgress += 0.004; // 약 4초에 완료
+                    // 애니메이션 진행률 업데이트
+                    this.item3AnimationProgress += 0.005; // 약 2초에 완료
                     
                     if (this.item3AnimationProgress >= 1) {
                         this.item3AnimationProgress = 1;
-                        this.item3AnimationState = 'idle';
+                        this.item3AnimationState = 'completed'; // 완료 상태로 변경
                     }
                     
-                    // device_v2blend 기준 왼쪽(-1.5)에서 우측(1.7)으로 이동
-                    const startX = -1.5;
-                    const endX = 1.7;
+                    // 시작 위치에서 목표 위치(중간 지점)까지 수평 이동
+                    const startX = this.item3StartPosition.x;
+                    const endX = this.item3TargetPosition.x;
                     const targetX = startX + (endX - startX) * this.item3AnimationProgress;
                     this.item3Model.position.x = targetX;
                     
-                    // 중간에 세워졌다가 다시 누워지는 회전 (0.3~0.7 구간에서 세워짐) - Z축 회전
-                    let rotationZ = 0;
-                    if (this.item3AnimationProgress >= 0.3 && this.item3AnimationProgress <= 0.7) {
-                        // 0.3~0.7 구간에서 세워지는 애니메이션 (Z축 회전)
-                        const flipProgress = (this.item3AnimationProgress - 0.3) / 0.4;
-                        rotationZ = Math.sin(flipProgress * Math.PI) * Math.PI / 2; // 0도에서 90도까지
-                    }
-                    this.item3Model.rotation.z = rotationZ;
-                    
-                    // 책장 넘기듯이 할 때 위로 움직이는 애니메이션
-                    let targetY = -0.1; // 기본 높이 (아래로 조금)
-                    if (this.item3AnimationProgress >= 0.3 && this.item3AnimationProgress <= 0.7) {
-                        // 0.3~0.7 구간에서 위로 올라가는 애니메이션
-                        const liftProgress = (this.item3AnimationProgress - 0.3) / 0.4;
-                        targetY = -0.1 + Math.sin(liftProgress * Math.PI) * 1.5; // 0.5에서 2까지
-                    }
-                    this.item3Model.position.y = targetY;
-                    
-                    // Z축 위치는 항상 -1.5로 고정 (더 아래)
-                    this.item3Model.position.z = -0.4;
-                } else {
-                    // idle 상태에서는 device_v2blend 기준 왼쪽 위치에 고정 (흔들림 없음)
-                    this.item3Model.position.x = -2.2; // device_v2blend 기준 왼쪽 위치에 고정
-                    this.item3Model.position.y = -0.1; // 고정된 높이 (아래로 조금)
-                    this.item3Model.position.z = -0.4; // Z축 위치 고정 (더 아래)
+                    // Y, Z축은 고정 (수평 이동만)
+                    this.item3Model.position.y = this.item3StartPosition.y;
+                    this.item3Model.position.z = this.item3StartPosition.z;
+                } else if (this.item3AnimationState === 'completed') {
+                    // 완료 상태에서는 목표 위치에 그대로 유지 (복구하지 않음)
+                    this.item3Model.position.x = this.item3TargetPosition.x;
+                    this.item3Model.position.y = this.item3TargetPosition.y;
+                    this.item3Model.position.z = this.item3TargetPosition.z;
                 }
                 
-                // Item3은 device_v2blend의 자식이므로 별도 Y축 회전 불필요
-                // 상대적 위치는 항상 유지됨
+                // Item3 모델 회전 애니메이션 - 제품 회전 버튼 클릭 시 90도 제자리 회전
+                // 피벗 그룹을 사용하므로 rotation.y만 변경하면 중심 기준 회전됨
+                if (this.item3RotationState === 'rotating') {
+                    // 회전 애니메이션 진행률 업데이트
+                    this.item3RotationProgress += 0.01; // 약 1초에 완료
+
+                    if (this.item3RotationProgress >= 1) {
+                        this.item3RotationProgress = 1;
+                        this.item3RotationState = 'completed';
+                        this.item3Model.rotation.y = this.item3TargetRotation;
+                    } else {
+                        // 현재 회전 각도 계산 (easing 적용)
+                        const t = this.item3RotationProgress;
+                        const easeT = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; // easeInOutQuad
+                        const currentAngle = this.item3StartRotation + (this.item3TargetRotation - this.item3StartRotation) * easeT;
+                        this.item3Model.rotation.y = currentAngle;
+                    }
+                } else if (this.item3RotationState === 'completed') {
+                    // 완료 상태에서는 최종 각도 유지
+                    this.item3Model.rotation.y = this.item3TargetRotation;
+                }
+                
+                // Item3 모델 적재 애니메이션 - 제품 적재 버튼 클릭 시 X축으로 2만큼 수평 이동
+                if (this.item3StackState === 'stacking') {
+                    // 적재 애니메이션 진행률 업데이트
+                    this.item3StackProgress += 0.01; // 약 1초에 완료
+                    
+                    if (this.item3StackProgress >= 1) {
+                        this.item3StackProgress = 1;
+                        this.item3StackState = 'completed'; // 완료 상태로 변경
+                        // 목표 위치로 정확히 설정
+                        this.item3Model.position.x = this.item3StackTargetPosition.x;
+                        this.item3Model.position.y = this.item3StackTargetPosition.y;
+                        this.item3Model.position.z = this.item3StackTargetPosition.z;
+                    } else {
+                        // 시작 위치에서 목표 위치(X축 +2)까지 수평 이동
+                        const startX = this.item3StackStartPosition.x;
+                        const endX = this.item3StackTargetPosition.x;
+                        const targetX = startX + (endX - startX) * this.item3StackProgress;
+                        this.item3Model.position.x = targetX;
+                        
+                        // Y, Z축은 고정 (수평 이동만)
+                        this.item3Model.position.y = this.item3StackStartPosition.y;
+                        this.item3Model.position.z = this.item3StackStartPosition.z;
+                    }
+                } else if (this.item3StackState === 'completed') {
+                    // 완료 상태에서는 목표 위치에 그대로 유지
+                    this.item3Model.position.x = this.item3StackTargetPosition.x;
+                    this.item3Model.position.y = this.item3StackTargetPosition.y;
+                    this.item3Model.position.z = this.item3StackTargetPosition.z;
+                }
             }
             
             // 카메라 자동 회전
@@ -699,48 +795,152 @@ export default {
             
             if (actionItemValue === 1) {
                 // action_item 값이 1일 경우: 애니메이션 시작
-                if (this.item3AnimationState === 'idle') {
+                if (this.item3AnimationState === 'idle' || this.item3AnimationState === 'completed') {
                     this.startItem3Animation();
                 }
-            } else if (actionItemValue === 0) {
-                // action_item 값이 0일 경우: 애니메이션 중지 및 리셋
-                if (this.item3AnimationState === 'moving') {
-                    this.stopItem3Animation();
-                }
             }
+            // action_item 값이 0일 경우: 복구하지 않음 (제거됨)
+        },
+        
+        // deviceModel의 중간 지점 계산
+        calculateDeviceModelCenter() {
+            if (!this.deviceModel) {
+                return { x: 0, y: -0.48, z: -0.5 };
+            }
+            
+            // 바운딩 박스 계산
+            const box = new THREE.Box3().setFromObject(this.deviceModel);
+            const center = box.getCenter(new THREE.Vector3());
+            
+            // 중간 지점에서 오른쪽으로 10% 더 이동
+            // 오른쪽 끝까지의 거리의 10%를 더함
+            const rightOffset = (box.max.x - center.x) * 0.05;
+            const targetX = center.x + rightOffset;
+            
+            // deviceModel 기준 중간 지점 + 오른쪽 10% (X축만 사용, Y, Z는 초기 위치와 동일하게 유지)
+            return {
+                x: targetX + 0.5,
+                y: this.item3StartPosition.y, // 초기 위치의 Y값(-0.48)과 동일
+                z: this.item3StartPosition.z  // 초기 위치의 Z값(-0.5)과 동일
+            };
         },
         
         // Item3 애니메이션 시작
         startItem3Animation() {
-            if (this.item3Model && this.item3AnimationState === 'idle') {
-                // device_v2blend 기준 왼쪽 위치로 리셋 후 애니메이션 시작
-                this.item3Model.position.x = -1.5; // 왼쪽 시작 위치
-                this.item3Model.position.y = 0.5; // 아래로 조금
-                this.item3Model.position.z = -1.5; // Z축 더 아래
+            if (this.item3Model && (this.item3AnimationState === 'idle' || this.item3AnimationState === 'completed')) {
+                // deviceModel의 중간 지점 계산
+                this.item3TargetPosition = this.calculateDeviceModelCenter();
+                
+                // 시작 위치 저장 (현재 위치에서 시작)
+                this.item3StartPosition = {
+                    x: this.item3Model.position.x,
+                    y: this.item3Model.position.y,
+                    z: this.item3Model.position.z
+                };
+                
+                // 애니메이션 시작
                 this.item3AnimationState = 'moving';
                 this.item3AnimationProgress = 0;
-                console.log(`${this.actionItemName}=1: Item3 애니메이션 시작`);
+                console.log(`Item3 애니메이션 시작: 시작(${this.item3StartPosition.x}) -> 중간(${this.item3TargetPosition.x})`);
             }
         },
         
-        // Item3 애니메이션 중지 및 리셋
-        stopItem3Animation() {
-            if (this.item3Model && this.item3AnimationState === 'moving') {
-                this.item3AnimationState = 'idle';
-                this.item3AnimationProgress = 0;
-                // idle 상태 위치로 리셋
-                this.item3Model.position.x = -2.2; // device_v2blend 기준 왼쪽 위치에 고정
-                this.item3Model.position.y = -0.1; // 고정된 높이 (아래로 조금)
-                this.item3Model.position.z = -0.4; // Z축 위치 고정 (더 아래)
-                this.item3Model.rotation.z = 0; // 회전 리셋
-                console.log(`${this.actionItemName}=0: Item3 애니메이션 중지 및 리셋`);
-            }
-        },
-        
-        // Item3 모델 클릭 이벤트 (수동 제어용)
+        // Item3 모델 클릭 이벤트 (수동 제어용) - 제품 이동 적용
         onItem3Click() {
-            if (this.item3AnimationState === 'idle') {
+            // 하드코딩된 값 설정: 제품이동 D4123 = 1
+            const value = 1; // 하드코딩된 값
+            this.productMoveState = value;
+            // PLC에 값 전송
+            this.writePlcValue(PLC_ADDRESS_PRODUCT_MOVE, value);
+            
+            // 애니메이션 제어: 중간 지점까지 수평 이동
+            if (value === 1 && this.item3AnimationState === 'idle') {
                 this.startItem3Animation();
+            }
+        },
+        
+        // 제품 회전 적용
+        onProductRotate() {
+            // 하드코딩된 값 설정: 제품회전 D4407 = 1
+            const value = 1; // 하드코딩된 값
+            this.productRotateState = value;
+            // PLC에 값 전송
+            this.writePlcValue(PLC_ADDRESS_PRODUCT_ROTATE, value);
+            console.log(`제품 회전 적용: ${PLC_ADDRESS_PRODUCT_ROTATE} = ${value}`);
+            
+            // 3D 철망 90도 회전 애니메이션 시작
+            this.startItem3Rotation();
+        },
+        
+        // Item3 회전 애니메이션 시작 (철망 사각형 중심점 기준 제자리 회전)
+        // 피벗 그룹을 사용하므로 단순히 rotation.y만 변경하면 됨
+        startItem3Rotation() {
+            if (this.item3Model && (this.item3RotationState === 'idle' || this.item3RotationState === 'completed')) {
+                // 현재 회전 각도를 시작 각도로 저장
+                this.item3StartRotation = this.item3Model.rotation.y;
+
+                // 목표 각도: 현재 각도에서 90도 추가 (라디안으로 변환)
+                this.item3TargetRotation = this.item3StartRotation + (Math.PI / 2); // 90도 = π/2 라디안
+
+                // 회전 애니메이션 시작
+                this.item3RotationState = 'rotating';
+                this.item3RotationProgress = 0;
+                console.log(`Item3 제자리 회전 시작: ${(this.item3StartRotation * 180 / Math.PI).toFixed(1)}도 -> ${(this.item3TargetRotation * 180 / Math.PI).toFixed(1)}도`);
+            }
+        },
+        
+        // 제품 적재 적용
+        onProductStack() {
+            // 하드코딩된 값 설정: 제품적재 D4625 = 1
+            const value = 1; // 하드코딩된 값
+            this.productStackState = value;
+            // PLC에 값 전송
+            this.writePlcValue(PLC_ADDRESS_PRODUCT_STACK, value);
+            console.log(`제품 적재 적용: ${PLC_ADDRESS_PRODUCT_STACK} = ${value}`);
+            
+            // 3D 철망 X축으로 2만큼 수평 이동 애니메이션 시작
+            this.startItem3Stack();
+        },
+        
+        // Item3 적재 애니메이션 시작 (X축으로 2만큼 수평 이동)
+        startItem3Stack() {
+            if (this.item3Model && (this.item3StackState === 'idle' || this.item3StackState === 'completed')) {
+                // 현재 위치를 시작 위치로 저장
+                this.item3StackStartPosition = {
+                    x: this.item3Model.position.x,
+                    y: this.item3Model.position.y,
+                    z: this.item3Model.position.z
+                };
+                
+                // 목표 위치: 현재 위치에서 X축으로 2만큼 이동
+                this.item3StackTargetPosition = {
+                    x: this.item3StackStartPosition.x + 1.3,
+                    y: this.item3StackStartPosition.y,
+                    z: this.item3StackStartPosition.z
+                };
+                
+                // 적재 애니메이션 시작
+                this.item3StackState = 'stacking';
+                this.item3StackProgress = 0;
+                console.log(`Item3 적재 애니메이션 시작: X축 ${this.item3StackStartPosition.x} -> ${this.item3StackTargetPosition.x}`);
+            }
+        },
+        
+        // PLC에 값 쓰기
+        async writePlcValue(address, value) {
+            try {
+                const response = await this.$http.post('/api/v1/plc/write', {
+                    address: address,
+                    value: value
+                });
+                
+                if (response.data.success) {
+                    console.log(`PLC 쓰기 성공: ${address} = ${value}`);
+                } else {
+                    console.error(`PLC 쓰기 실패: ${response.data.message}`);
+                }
+            } catch (error) {
+                console.error(`PLC 쓰기 오류 (${address}):`, error);
             }
         },
 
@@ -907,26 +1107,47 @@ export default {
     font-size: 12px;
 }
 
-.item3-click-btn {
+.button-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+}
+
+.button-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.button-label {
+    font-size: 0.75rem;
+    color: #88ccff;
+    font-weight: 500;
+    flex: 1;
+}
+
+.apply-btn {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     color: white;
     border: none;
-    padding: 0.5rem 1rem;
-    border-radius: 0.5rem;
-    font-size: 0.75rem;
+    padding: 0.4rem 0.8rem;
+    border-radius: 0.4rem;
+    font-size: 0.7rem;
     font-weight: 600;
     cursor: pointer;
-    margin-top: 0.5rem;
     transition: all 0.3s ease;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    min-width: 60px;
 }
 
-.item3-click-btn:hover:not(:disabled) {
+.apply-btn:hover:not(:disabled) {
     transform: translateY(-2px);
     box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
 }
 
-.item3-click-btn:disabled {
+.apply-btn:disabled {
     opacity: 0.6;
     cursor: not-allowed;
     transform: none;
