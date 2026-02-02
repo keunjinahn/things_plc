@@ -39,6 +39,11 @@ const routes = [
         name: 'plc-memory',
         component: () => import(/* webpackChunkName: "plc-memory" */ '../views/plc-memory.vue')
     },
+    {
+        path: '/memory-query-manage',
+        name: 'memory-query-manage',
+        component: () => import(/* webpackChunkName: "memory-query-manage" */ '../views/memory-query-manage.vue')
+    },
 
     //components
     {

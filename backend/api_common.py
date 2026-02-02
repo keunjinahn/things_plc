@@ -59,6 +59,14 @@ manager.create_api(PlcDevice
                    , methods=['GET', 'DELETE', 'PATCH', 'POST']
                    , allow_patch_many=True)
 
+# PLC 조회 메모리 관리 API 생성
+manager.create_api(PlcQueryMemory
+                   , results_per_page=10000
+                   , url_prefix='/api/v1'
+                   , collection_name='plc-query-memory'
+                   , methods=['GET', 'DELETE', 'PATCH', 'POST']
+                   , allow_patch_many=True)
+
 @app.route('/api/v1/login', methods=['POST'])
 def login_api():
     data = json.loads(request.data)
@@ -426,13 +434,13 @@ def toggle_plc_memory_item_action(item_id):
     try:
         # 항목 조회
         item = db.session.query(PlcDataItem).filter(PlcDataItem.id == item_id).first()
-        
+
         if not item:
             return make_response(jsonify({
                 "success": False,
                 "message": "항목을 찾을 수 없습니다"
             }), 404)
-        
+
         # action_item이 체크되는 경우 (현재 false -> true)
         if not item.action_item:
             # 다른 모든 항목의 action_item을 false로 설정
@@ -442,9 +450,9 @@ def toggle_plc_memory_item_action(item_id):
         else:
             # action_item이 un체크되는 경우 (현재 true -> false)
             item.action_item = False
-        
+
         db.session.commit()
-        
+
         return make_response(jsonify({
             "success": True,
             "data": {
@@ -453,11 +461,163 @@ def toggle_plc_memory_item_action(item_id):
             },
             "message": "액션 항목 상태 업데이트 성공"
         }), 200)
-        
+
     except Exception as e:
         db.session.rollback()
         print(f"PLC 메모리 항목 액션 상태 업데이트 오류: {str(e)}")
         return make_response(jsonify({
             "success": False,
             "message": f"액션 상태 업데이트 실패: {str(e)}"
+        }), 500)
+
+@app.route('/api/v1/plc/query-memory-realtime', methods=['GET'])
+def get_plc_query_memory_realtime():
+    """plc_query_memory 기반 실시간 데이터 조회 API
+
+    1. plc_query_memory 테이블의 항목들을 조회
+    2. memory_address와 plc_data_items의 item_name이 일치하는 id를 찾음
+    3. plc_real_time_data에서 해당 data_item_id의 가장 최근 value를 조회
+    """
+    try:
+        # 1. plc_query_memory 테이블에서 활성화된 항목들 조회
+        query_memory_items = db.session.query(PlcQueryMemory)\
+            .filter(PlcQueryMemory.is_active == True)\
+            .order_by(PlcQueryMemory.id)\
+            .all()
+
+        if not query_memory_items:
+            return make_response(jsonify({
+                "success": True,
+                "data": [],
+                "message": "조회 메모리 항목이 없습니다."
+            }), 200)
+
+        result_data = []
+
+        for query_item in query_memory_items:
+            # 2. memory_address와 plc_data_items의 item_name이 일치하는 항목 찾기
+            data_item = db.session.query(PlcDataItem)\
+                .filter(PlcDataItem.item_name == query_item.memory_address)\
+                .first()
+
+            if data_item:
+                # 3. plc_real_time_data에서 해당 data_item_id의 가장 최근 value 조회
+                latest_data = db.session.query(PlcRealTimeData)\
+                    .filter(PlcRealTimeData.data_item_id == data_item.id)\
+                    .order_by(PlcRealTimeData.timestamp.desc())\
+                    .first()
+
+                result_data.append({
+                    "query_memory_id": query_item.id,
+                    "item_name": query_item.item_name,
+                    "memory_address": query_item.memory_address,
+                    "description": query_item.description,
+                    "data_item_id": data_item.id,
+                    "action_item": data_item.action_item,
+                    "value": float(latest_data.value) if latest_data and latest_data.value else None,
+                    "quality": latest_data.quality if latest_data else "uncertain",
+                    "timestamp": latest_data.timestamp.isoformat() if latest_data and latest_data.timestamp else None
+                })
+            else:
+                # data_item을 찾지 못한 경우
+                result_data.append({
+                    "query_memory_id": query_item.id,
+                    "item_name": query_item.item_name,
+                    "memory_address": query_item.memory_address,
+                    "description": query_item.description,
+                    "data_item_id": None,
+                    "action_item": False,
+                    "value": None,
+                    "quality": "uncertain",
+                    "timestamp": None
+                })
+
+        return make_response(jsonify({
+            "success": True,
+            "data": result_data,
+            "message": "조회 메모리 실시간 데이터 조회 성공"
+        }), 200)
+
+    except Exception as e:
+        print(f"조회 메모리 실시간 데이터 조회 오류: {str(e)}")
+        return make_response(jsonify({
+            "success": False,
+            "data": [],
+            "message": f"데이터 조회 실패: {str(e)}"
+        }), 500)
+
+
+@app.route('/api/v1/plc/realtime-data-input', methods=['POST'])
+def post_plc_realtime_data_input():
+    """PLC 실시간 데이터 입력 API (plc_real_time_data 테이블에 저장)
+
+    요청 Body:
+    {
+        "data_item_id": int,   // plc_data_items 테이블의 id
+        "value": number,       // 10진수 값
+        "quality": string      // 데이터 품질 (기본값: 'good')
+    }
+    """
+    try:
+        data = json.loads(request.data)
+
+        data_item_id = data.get('data_item_id')
+        value = data.get('value')
+        quality = data.get('quality', 'good')
+
+        if data_item_id is None:
+            return make_response(jsonify({
+                "success": False,
+                "message": "data_item_id가 필요합니다."
+            }), 400)
+
+        if value is None:
+            return make_response(jsonify({
+                "success": False,
+                "message": "value가 필요합니다."
+            }), 400)
+
+        # data_item 존재 여부 확인
+        data_item = db.session.query(PlcDataItem).filter(PlcDataItem.id == data_item_id).first()
+        if not data_item:
+            return make_response(jsonify({
+                "success": False,
+                "message": f"data_item_id {data_item_id}에 해당하는 항목이 없습니다."
+            }), 404)
+
+        # 새 실시간 데이터 레코드 생성
+        new_record = PlcRealTimeData(
+            data_item_id=data_item_id,
+            value=float(value),
+            quality=quality,
+            timestamp=datetime.now()
+        )
+
+        db.session.add(new_record)
+        db.session.commit()
+
+        # 16진수 변환 (로그용)
+        hex_value = hex(int(value)).upper().replace('0X', '0x')
+
+        print(f"실시간 데이터 저장: data_item_id={data_item_id}, value={value} ({hex_value}), quality={quality}")
+
+        return make_response(jsonify({
+            "success": True,
+            "data": {
+                "id": new_record.id,
+                "data_item_id": new_record.data_item_id,
+                "value": new_record.value,
+                "hex_value": hex_value,
+                "quality": new_record.quality,
+                "timestamp": new_record.timestamp.isoformat() if new_record.timestamp else None
+            },
+            "message": "데이터 저장 성공"
+        }), 201)
+
+    except Exception as e:
+        db.session.rollback()
+        print(f"실시간 데이터 저장 오류: {str(e)}")
+        return make_response(jsonify({
+            "success": False,
+            "message": f"데이터 저장 실패: {str(e)}"
         }), 500)

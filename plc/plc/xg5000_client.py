@@ -139,11 +139,12 @@ class XG5000Logger:
 class XG5000Client:
     """XG5000 PLC 클라이언트 클래스"""
     
-    def __init__(self):
+    def __init__(self, read_count_mode: str = "1"):
         self.connection = None
         self.running = False
         self.collection_thread = None
         self.collection_interval = 1000  # 밀리초
+        self.read_count_mode = read_count_mode  # "1" or "all"
         self.logger = XG5000Logger()
         self.stats = {
             'total_requests': 0,
@@ -180,42 +181,69 @@ class XG5000Client:
             self.connection = None
             self.logger.log_database_operation("연결 해제", "MariaDB", 0, True)
     
-    def get_plc_data_items(self, plc_device_id: int = 1) -> List[Dict]:
-        """PLC 데이터 항목 조회 - is_active가 1인 항목만 조회"""
+    def get_query_memory_items(self, plc_device_id: int = 1) -> List[Dict]:
+        """plc_query_memory 테이블 기반 PLC 데이터 항목 조회
+
+        1. plc_query_memory 테이블에서 is_active=1인 항목 조회
+        2. memory_address와 plc_data_items의 item_name이 일치하는 항목의 정보 가져오기
+        """
         start_time = time.time()
         try:
             with self.connection.cursor(pymysql.cursors.DictCursor) as cursor:
-                # is_active = 1인 항목만 조회하여 데이터 수집 대상으로 사용
+                # plc_query_memory 테이블에서 활성화된 항목 조회 후
+                # memory_address와 plc_data_items의 item_name이 일치하는 항목 JOIN
                 cursor.execute('''
-                    SELECT id, item_name, item_type, address, modbus_address, 
-                           modbus_function, description
-                    FROM plc_data_items 
-                    WHERE plc_device_id = %s AND is_active = 1
-                    ORDER BY item_type, modbus_address
-                ''', (plc_device_id,))
-                
+                    SELECT
+                        pdi.id,
+                        pdi.item_name,
+                        pdi.item_type,
+                        pdi.address,
+                        pdi.modbus_address,
+                        pdi.modbus_function,
+                        pdi.description,
+                        pqm.id as query_memory_id,
+                        pqm.item_name as query_item_name,
+                        pqm.memory_address
+                    FROM plc_query_memory pqm
+                    INNER JOIN plc_data_items pdi ON pqm.memory_address = pdi.item_name
+                    WHERE pqm.is_active = 1
+                    ORDER BY pqm.id
+                ''')
+
                 items = cursor.fetchall()
                 duration = time.time() - start_time
-                
-                self.logger.log_database_operation("조회", "plc_data_items", len(items), True, f"조회 시간: {duration:.3f}초")
-                self.logger.log_performance("데이터 항목 조회", duration, f"PLC 장치 ID: {plc_device_id}")
-                
+
+                self.logger.log_database_operation("조회", "plc_query_memory + plc_data_items", len(items), True, f"조회 시간: {duration:.3f}초")
+                self.logger.log_performance("조회 메모리 항목 조회", duration, f"조회된 항목: {len(items)}개")
+
                 return items
-                
+
         except Exception as e:
             duration = time.time() - start_time
-            self.logger.log_error("데이터 항목 조회", str(e))
-            self.logger.log_database_operation("조회", "plc_data_items", 0, False, f"조회 시간: {duration:.3f}초, 오류: {e}")
+            self.logger.log_error("조회 메모리 항목 조회", str(e))
+            self.logger.log_database_operation("조회", "plc_query_memory + plc_data_items", 0, False, f"조회 시간: {duration:.3f}초, 오류: {e}")
             return []
     
     def batch_read_plc_data(self, data_items: List[Dict]) -> List[Dict]:
-        """PLC 데이터 항목들을 개별적으로 읽기 (전체 항목이 10개 이하)"""
+        """PLC 데이터 항목들을 읽기
+        
+        read_count_mode에 따라:
+        - "1": 각 항목을 개별적으로 읽기
+        - "all": 연속된 주소들을 배치로 묶어서 한 번에 읽기
+        """
+        if self.read_count_mode == "all":
+            return self._batch_read_all(data_items)
+        else:
+            return self._read_one_by_one(data_items)
+    
+    def _read_one_by_one(self, data_items: List[Dict]) -> List[Dict]:
+        """PLC 데이터 항목들을 개별적으로 읽기"""
         start_time = time.time()
         collected_data = []
         success_count = 0
         error_count = 0
         
-        self.logger.logger.info(f"데이터 읽기 시작: 총 {len(data_items)}개 항목")
+        self.logger.logger.info(f"데이터 읽기 시작 (개별 읽기): 총 {len(data_items)}개 항목")
         
         # 각 항목을 개별적으로 읽기
         for item in data_items:
@@ -249,6 +277,132 @@ class XG5000Client:
                     'quality': 'bad'
                 })
                 error_count += 1
+        
+        total_duration = time.time() - start_time
+        self.logger.log_data_collection(len(data_items), success_count, error_count, total_duration)
+        self.logger.log_performance("전체 데이터 읽기", total_duration, f"성공: {success_count}, 실패: {error_count}")
+        
+        return collected_data
+    
+    def _batch_read_all(self, data_items: List[Dict]) -> List[Dict]:
+        """PLC 데이터 항목들을 배치로 묶어서 한 번에 읽기"""
+        start_time = time.time()
+        collected_data = []
+        success_count = 0
+        error_count = 0
+        
+        self.logger.logger.info(f"데이터 읽기 시작 (배치 읽기): 총 {len(data_items)}개 항목")
+        
+        # 연속된 주소들을 배치 그룹으로 생성
+        batches = self._create_batch_groups(data_items)
+        self.logger.logger.info(f"배치 그룹 생성 완료: {len(batches)}개 배치")
+        
+        # 각 배치를 한 번에 읽기
+        for batch in batches:
+            try:
+                batch_start_time = time.time()
+                
+                # 배치의 첫 번째 항목 정보로 주소 변환
+                first_item = batch[0]
+                address = first_item.get('modbus_address')
+                item_type = first_item.get('item_type')
+                count = len(batch)
+                
+                if address is None or item_type is None:
+                    self.logger.log_error("배치 읽기", f"배치 첫 항목에 주소 또는 타입 정보가 없습니다")
+                    # 개별 읽기로 폴백
+                    for item in batch:
+                        value = self._read_single_item_from_plc(item)
+                        if value is not None:
+                            collected_data.append({
+                                'data_item_id': item['id'],
+                                'value': float(value),
+                                'quality': 'good'
+                            })
+                            success_count += 1
+                        else:
+                            collected_data.append({
+                                'data_item_id': item['id'],
+                                'value': 0.0,
+                                'quality': 'bad'
+                            })
+                            error_count += 1
+                    continue
+                
+                # XGT 주소 형식으로 변환
+                addr_str = self._convert_to_xgt_address(item_type, address)
+                
+                # 배치로 한 번에 읽기
+                values = xgt_read_dw(addr_str, count)
+                batch_duration = time.time() - batch_start_time
+                
+                if values and len(values) == count:
+                    # 읽은 값들을 각 항목에 매핑
+                    for idx, item in enumerate(batch):
+                        if idx < len(values):
+                            collected_data.append({
+                                'data_item_id': item['id'],
+                                'value': float(values[idx]),
+                                'quality': 'good'
+                            })
+                            success_count += 1
+                            self.logger.logger.debug(f"항목 {item['item_name']} 읽기 성공: {values[idx]}")
+                        else:
+                            collected_data.append({
+                                'data_item_id': item['id'],
+                                'value': 0.0,
+                                'quality': 'bad'
+                            })
+                            error_count += 1
+                    self.logger.logger.info(f"배치 읽기 성공: {addr_str} x{count}, {batch_duration:.3f}초")
+                else:
+                    # 읽기 실패 시 개별 읽기로 폴백
+                    self.logger.logger.warning(f"배치 읽기 실패, 개별 읽기로 전환: {addr_str} x{count}")
+                    for item in batch:
+                        value = self._read_single_item_from_plc(item)
+                        if value is not None:
+                            collected_data.append({
+                                'data_item_id': item['id'],
+                                'value': float(value),
+                                'quality': 'good'
+                            })
+                            success_count += 1
+                        else:
+                            collected_data.append({
+                                'data_item_id': item['id'],
+                                'value': 0.0,
+                                'quality': 'bad'
+                            })
+                            error_count += 1
+                            
+            except Exception as e:
+                self.logger.log_error("배치 읽기", f"배치 처리 오류: {e}")
+                # 오류 발생 시 개별 읽기로 폴백
+                for item in batch:
+                    try:
+                        value = self._read_single_item_from_plc(item)
+                        if value is not None:
+                            collected_data.append({
+                                'data_item_id': item['id'],
+                                'value': float(value),
+                                'quality': 'good'
+                            })
+                            success_count += 1
+                        else:
+                            collected_data.append({
+                                'data_item_id': item['id'],
+                                'value': 0.0,
+                                'quality': 'bad'
+                            })
+                            error_count += 1
+                    except Exception as item_error:
+                        self.logger.log_error("항목 읽기", f"항목 {item.get('item_name', 'unknown')} 처리 오류: {item_error}")
+                        collected_data.append({
+                            'data_item_id': item['id'],
+                            'value': 0.0,
+                            'quality': 'bad'
+                        })
+                        error_count += 1
         
         total_duration = time.time() - start_time
         self.logger.log_data_collection(len(data_items), success_count, error_count, total_duration)
@@ -425,10 +579,10 @@ class XG5000Client:
                 
                 self.logger.logger.debug(f"데이터 수집 시작 (회차: {collection_count})")
                 
-                # PLC 데이터 항목 조회
-                data_items = self.get_plc_data_items(plc_device_id)
+                # plc_query_memory 테이블 기반 데이터 항목 조회
+                data_items = self.get_query_memory_items(plc_device_id)
                 if not data_items:
-                    self.logger.logger.warning(f"데이터 항목이 없습니다: {plc_device_id}")
+                    self.logger.logger.warning(f"plc_query_memory에 활성화된 항목이 없습니다")
                     time.sleep(5)
                     continue
                 
@@ -585,6 +739,8 @@ def main():
     parser.add_argument('--test', action='store_true', help='PLC 연결 테스트')
     parser.add_argument('--plc-id', type=int, default=1, help='PLC 장치 ID (기본값: 1)')
     parser.add_argument('--interval', type=int, default=1000, help='수집 주기 (밀리초, 기본값: 1000)')
+    parser.add_argument('--count', type=str, default='1', choices=['1', 'all'], 
+                       help='PLC 데이터 읽기 모드: 1=개별 읽기 (기본값), all=배치 읽기')
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], 
                        default='INFO', help='로그 레벨 (기본값: INFO)')
     
@@ -604,8 +760,13 @@ def main():
         logging.getLogger('XG5000Client').setLevel(logging.ERROR)
         print(f"로그 레벨을 {args.log_level}로 설정했습니다.")
     
-    client = XG5000Client()
+    client = XG5000Client(read_count_mode=args.count)
     client.collection_interval = args.interval
+    
+    if args.count == 'all':
+        print(f"PLC 데이터 읽기 모드: 배치 읽기 (연속 주소를 한 번에 읽기)")
+    else:
+        print(f"PLC 데이터 읽기 모드: 개별 읽기 (항목별로 하나씩 읽기)")
     
     if args.test:
         print("=== PLC 연결 테스트 ===")

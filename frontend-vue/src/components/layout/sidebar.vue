@@ -48,7 +48,16 @@
                         </div>
                     </router-link>
                 </li>
-                
+
+                <li class="menu">
+                    <router-link to="/memory-query-manage" class="dropdown-toggle" @click="toggleMenu">
+                        <div class="">
+                            <i class="las la-database"></i>
+                            <span>조회 메모리 관리</span>
+                        </div>
+                    </router-link>
+                </li>
+
                 <!-- <li class="menu">
                     <router-link to="/plc-data" class="dropdown-toggle" @click="toggleMenu">
                         <div class="">

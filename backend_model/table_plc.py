@@ -154,4 +154,33 @@ class PlcRealTimeData(db.Model):
             "value": float(self.value) if self.value else None,
             "quality": self.quality,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None
-        }    
+        }
+
+class PlcQueryMemory(db.Model):
+    """PLC 조회 메모리 관리 테이블"""
+    __tablename__ = 'plc_query_memory'
+
+    id = db.Column('id', db.Integer, primary_key=True, autoincrement=True)
+    item_name = db.Column('item_name', db.String(100), nullable=False, comment='항목이름')
+    memory_address = db.Column('memory_address', db.String(50), nullable=False, comment='메모리 주소')
+    description = db.Column('description', db.Text, comment='설명')
+    is_active = db.Column('is_active', db.Boolean, default=True, comment='활성화 상태')
+    created_at = db.Column('created_at', db.TIMESTAMP, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column('updated_at', db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # 인덱스 설정
+    __table_args__ = (
+        Index('idx_query_memory_item_name', 'item_name'),
+        Index('idx_query_memory_address', 'memory_address'),
+    )
+
+    def serialize(self):
+        return {
+            "id": self.id,
+            "item_name": self.item_name,
+            "memory_address": self.memory_address,
+            "description": self.description,
+            "is_active": self.is_active,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None
+        }
